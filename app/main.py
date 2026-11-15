@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .errors import ApiError
+from .slots import router as slots_router
 
 app = FastAPI(title="Clinic booking API", version="1.0.0")
 
@@ -25,7 +26,6 @@ router = APIRouter()
 def health() -> dict:
     return {"ok": True}
 
-
 @app.exception_handler(ApiError)
 async def handle_api_error(_: Request, exc: ApiError) -> JSONResponse:
     return JSONResponse(
@@ -44,7 +44,9 @@ async def handle_unexpected(_: Request, exc: Exception) -> JSONResponse:
 
 
 # Vercel routes every non-static request into this one function, and the path
-# the function receives depends on the rewrite. Registering the same router
+# the function receives depends on the rewrite. Registering the same routers
 # under each candidate prefix means any of them resolves.
 for _prefix in ("", "/api", "/api/index"):
-    app.include_router(router, prefix=_prefix, include_in_schema=_prefix == "")
+    in_schema = _prefix == ""
+    app.include_router(router, prefix=_prefix, include_in_schema=in_schema)
+    app.include_router(slots_router, prefix=_prefix, include_in_schema=in_schema)
