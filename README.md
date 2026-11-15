@@ -3,8 +3,9 @@
 A JSON API for booking clinic appointment slots, plus a single-page front end
 that uses it. Built to the contract at <https://koyaacademy.com/assessment-api>.
 
-FastAPI + Postgres, no other services. Every request must carry an `X-API-Key`
-header.
+FastAPI + Postgres, no other services. Every API request must carry an
+`X-API-Key` header; the page reaches the same logic through `/web`, where the
+server adds it.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -16,6 +17,29 @@ header.
 | `DELETE` | `/bookings/{id}` | Cancel a booking |
 
 Errors are always `{"error": "<message>"}`. Missing or wrong key is `401`.
+
+## The page, and why it has no key
+
+The page is served from the same origin as the API, so the person using it is a
+patient — not an API consumer. Making the browser send `X-API-Key` would mean
+asking every visitor for the clinic's credential, so the page calls `/web/*`
+instead:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/web/slots` | Same list the API returns |
+| `POST` | `/web/bookings` | Book through the page |
+| `GET` | `/web/bookings` | A person's bookings |
+| `GET` | `/web/bookings/{id}` | One booking |
+| `DELETE` | `/web/bookings/{id}` | Cancel |
+
+These routes run the same core as the API with the key added on the server. They
+are deliberately unauthenticated: a public booking page is public, and the key
+protects the machine-to-machine contract, which is unchanged. Every rule still
+applies through the page — validation, one booking per slot, idempotency and the
+per-email rate limit — because the page and the API share the same code path.
+The key never reaches the browser and is never part of this repository.
+
 
 ## How the hard requirements are met
 
@@ -70,8 +94,8 @@ cp .env.example .env                                       # then set API_KEY
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1   # http://127.0.0.1:8010
 ```
 
-Open <http://127.0.0.1:8010> for the page. It asks for the API key once and
-keeps it in `localStorage`.
+Open <http://127.0.0.1:8010> for the page. It needs no setup: the server holds
+the key.
 
 ```bash
 .venv/Scripts/python scripts/seed_demo.py    # a few slots so the page has content
@@ -91,9 +115,10 @@ python scripts/smoke.py https://your-deployment.example <api-key>
 
 It covers authentication, reset and seeding, ordering and provider filtering,
 every validation branch, `404`/`409`/`422`/`429` outcomes, cancelled bookings,
-idempotent replay, cursor paging, and the rate limit. It also races 25
-concurrent bookings for one slot three times, then 80 bookings across ten slots,
-asserting exactly one winner per slot each time.
+idempotent replay, cursor paging, and the rate limit. It also checks that the
+page's `/web` routes work with no key while still enforcing every rule, and races
+25 concurrent bookings for one slot three times, then 80 bookings across ten
+slots, asserting exactly one winner per slot each time.
 
 ## Deploying
 
@@ -106,16 +131,16 @@ a static file from the same origin.
    `TZ=UTC`, then deploy with `npx.cmd vercel --prod`.
 4. Verify: `python scripts/smoke.py https://your-url <api-key>`.
 
-`vercel.json` sends non-static paths to `api/index.py`. The app registers every
-route under `/`, `/api` and `/api/index`, so it works whichever path the rewrite
-produces. If the page itself ever 404s, narrow the rewrite source in
-`vercel.json` so static files are not captured.
+`vercel.json` rewrites only the API and page paths (`/slots`, `/bookings/*`,
+`/web/*`, `/health`, `/docs`, the schema) into `api/index.py`, so the static page
+is never caught by a catch-all. The app registers every route under `/`, `/api`
+and `/api/index`, so it works whichever path the rewrite produces.
 
 **Keep the key out of the repository.** `.env` is gitignored; `.env.example`
-contains names only. The web page asks for the key instead of embedding it, so
-this repository can be public. Send the key to whoever needs to test the API, and
-rotate it in Vercel if it is ever exposed — nothing else in the code depends on
-its value.
+contains names only. The page never receives the key either — it is added
+server-side — so this repository can be public. Send the key to whoever needs to
+test the API, and rotate it in Vercel if it is ever exposed; nothing else in the
+code depends on its value.
 
 ## Layout
 
@@ -125,6 +150,7 @@ app/main.py           wiring: CORS, error shape, route registration
 app/auth.py           the X-API-Key check
 app/slots.py          /reset, /slots
 app/bookings.py       bookings, cancel, pagination
+app/web.py            the page's backend, key added server-side
 app/idempotency.py    request fingerprints and stored replies
 app/ratelimit.py      the rolling per-email window
 app/validation.py     timestamps, emails, trimming

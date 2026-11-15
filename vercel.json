@@ -1,3 +1,13 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+  "rewrites": [
+    { "source": "/reset", "destination": "/api/index" },
+    { "source": "/slots", "destination": "/api/index" },
+    { "source": "/bookings", "destination": "/api/index" },
+    { "source": "/bookings/(.*)", "destination": "/api/index" },
+    { "source": "/web/(.*)", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/docs", "destination": "/api/index" },
+    { "source": "/openapi.json", "destination": "/api/index" },
+    { "source": "/redoc", "destination": "/api/index" }
+  ]
 }
