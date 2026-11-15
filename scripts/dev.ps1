@@ -1,8 +1,12 @@
 # Restart the local API on http://127.0.0.1:8010.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 [-ApiKey <key>]
+
+param([string]$ApiKey = "")
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+if ($ApiKey) { $env:API_KEY = $ApiKey }
 
 $listener = Get-NetTCPConnection -LocalPort 8010 -State Listen -ErrorAction SilentlyContinue
 if ($listener) {

@@ -3,8 +3,10 @@
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .config import ROOT
 from .errors import ApiError
 from .slots import router as slots_router
 from .bookings import router as bookings_router
@@ -52,3 +54,8 @@ for _prefix in ("", "/api", "/api/index"):
     app.include_router(router, prefix=_prefix, include_in_schema=in_schema)
     app.include_router(slots_router, prefix=_prefix, include_in_schema=in_schema)
     app.include_router(bookings_router, prefix=_prefix, include_in_schema=in_schema)
+
+# Local development convenience: the host serves public/ itself, so this only
+# matters when running uvicorn. Mounted last so it never shadows an API route.
+if (ROOT / "public").is_dir():
+    app.mount("/", StaticFiles(directory=ROOT / "public", html=True), name="page")
