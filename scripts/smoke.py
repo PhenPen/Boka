@@ -431,6 +431,97 @@ def check_rate_limit() -> None:
     )
 
 
+def check_web_backend() -> None:
+    section("the page's backend (/web), no key at all")
+    equal("GET /slots without a key is still 401", call("GET", "/slots", key=False).status, 401)
+
+    seed(
+        [
+            make_slot("w1", "2030-08-01T09:00:00Z", "2030-08-01T09:30:00Z"),
+            make_slot("w2", "2030-08-01T10:00:00Z", "2030-08-01T10:30:00Z"),
+        ]
+    )
+
+    listing = call("GET", "/web/slots", key=False)
+    equal("the page lists slots with no key", listing.status, 200)
+    equal(
+        "and sees every slot",
+        [s["id"] for s in (listing.body or {}).get("slots", [])],
+        ["w1", "w2"],
+    )
+    equal(
+        "the same route resolves under /api",
+        call("GET", "/api/web/slots", key=False).status,
+        200,
+    )
+    equal(
+        "and under /api/index",
+        call("GET", "/api/index/web/slots", key=False).status,
+        200,
+    )
+
+    address = email("web")
+    created = call(
+        "POST", "/web/bookings", {"slot_id": "w1", "name": "Ada", "email": address}, key=False
+    )
+    equal("the page books with no key", created.status, 201)
+    booking_id = (created.body or {}).get("id")
+
+    equal(
+        "the page reads that booking back",
+        call("GET", f"/web/bookings/{booking_id}", key=False).status,
+        200,
+    )
+    mine = call("GET", f"/web/bookings?email={quote(address)}", key=False)
+    equal(
+        "the page lists the person's bookings",
+        [b["id"] for b in (mine.body or {}).get("bookings", [])],
+        [booking_id],
+    )
+
+    equal(
+        "the one-booking rule still applies through the page",
+        call("POST", "/web/bookings", {"slot_id": "w1", "name": "Ada", "email": email()}, key=False).status,
+        409,
+    )
+    equal(
+        "validation still applies through the page",
+        call("POST", "/web/bookings", {"slot_id": "w2", "email": email()}, key=False).status,
+        400,
+    )
+
+    body = {"slot_id": "w2", "name": "Ada", "email": email("web-idem")}
+    headers = {"Idempotency-Key": f"web-{uuid.uuid4()}"}
+    first = call("POST", "/web/bookings", body, headers=headers, key=False)
+    equal("the page can send an idempotency key", first.status, 201)
+    replay = call("POST", "/web/bookings", body, headers=headers, key=False)
+    equal(
+        "a replay returns the same booking",
+        (replay.body or {}).get("id"),
+        (first.body or {}).get("id"),
+    )
+
+    cancelled = call("DELETE", f"/web/bookings/{booking_id}", key=False)
+    equal("the page cancels a booking", cancelled.status, 200)
+    freed = [s for s in call("GET", "/web/slots", key=False).body["slots"] if s["id"] == "w1"]
+    equal("cancelling frees the slot for the page", freed[0]["available"] if freed else None, True)
+
+    spam = email("web-spam")
+    for attempt in range(1, 6):
+        equal(
+            f"web attempt {attempt} is counted",
+            call("POST", "/web/bookings", {"slot_id": "missing", "name": "A", "email": spam}, key=False).status,
+            404,
+        )
+    throttled = call("POST", "/web/bookings", {"slot_id": "missing", "name": "A", "email": spam}, key=False)
+    equal("the sixth web attempt is 429", throttled.status, 429)
+    check(
+        "Retry-After is present on the page route",
+        (throttled.headers.get("retry-after") or "").isdigit(),
+        throttled.headers,
+    )
+
+
 def check_concurrency() -> None:
     section("level 3: simultaneous bookings")
 
@@ -501,6 +592,7 @@ def main() -> int:
     check_idempotency()
     check_pagination()
     check_rate_limit()
+    check_web_backend()
     check_concurrency()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
