@@ -12,6 +12,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 
@@ -259,6 +260,62 @@ def check_cancel() -> None:
 
     rebooked = call("POST", "/bookings", {"slot_id": "s3", "name": "Ada Obi", "email": email()})
     equal("a freed slot can be booked again", rebooked.status, 201)
+
+
+def seed(slots: list[dict]) -> None:
+    call("POST", "/reset", {"slots": slots})
+
+
+def make_slot(slot_id: str, start: str, end: str, provider: str = "Dr Ade") -> dict:
+    return {"id": slot_id, "provider": provider, "start": start, "end": end}
+
+
+def check_idempotency() -> None:
+    section("level 4: idempotency")
+    seed(
+        [
+            make_slot("s1", "2030-02-01T09:00:00Z", "2030-02-01T09:30:00Z"),
+            make_slot("s2", "2030-02-01T10:00:00Z", "2030-02-01T10:30:00Z"),
+        ]
+    )
+    address = email("idem")
+    body = {"slot_id": "s1", "name": "Ada Obi", "email": address}
+    headers = {"Idempotency-Key": f"key-{uuid.uuid4()}"}
+
+    first = call("POST", "/bookings", body, headers=headers)
+    equal("the first attempt books", first.status, 201)
+    second = call("POST", "/bookings", body, headers=headers)
+    equal("the retry replays 201", second.status, 201)
+    equal(
+        "the retry returns the same booking id",
+        (second.body or {}).get("id"),
+        (first.body or {}).get("id"),
+    )
+    equal(
+        "the retry returns the same created_at",
+        (second.body or {}).get("created_at"),
+        (first.body or {}).get("created_at"),
+    )
+
+    clash = call("POST", "/bookings", {**body, "slot_id": "s2"}, headers=headers)
+    equal("the same key with a different body is 422", clash.status, 422)
+
+    other_key = {"Idempotency-Key": f"key-{uuid.uuid4()}"}
+    equal(
+        "the untouched slot still books under a different key",
+        call("POST", "/bookings", {**body, "slot_id": "s2"}, headers=other_key).status,
+        201,
+    )
+
+    seed([make_slot("s1", "2030-02-01T09:00:00Z", "2030-02-01T09:30:00Z")])
+    bad = {"slot_id": "s1", "name": "   ", "email": email("idem-bad")}
+    bad_key = {"Idempotency-Key": f"key-{uuid.uuid4()}"}
+    equal("an invalid booking is 400", call("POST", "/bookings", bad, headers=bad_key).status, 400)
+    equal(
+        "retrying it replays the 400 instead of booking",
+        call("POST", "/bookings", bad, headers=bad_key).status,
+        400,
+    )
 
 
 def main() -> int:
