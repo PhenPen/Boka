@@ -318,6 +318,69 @@ def check_idempotency() -> None:
     )
 
 
+def check_pagination() -> None:
+    section("level 4: pagination")
+    seed(
+        [
+            make_slot(f"p{i}", f"2030-03-{i:02d}T09:00:00Z", f"2030-03-{i:02d}T09:30:00Z")
+            for i in range(1, 6)
+        ]
+    )
+    address = email("pager")
+    key = {"Idempotency-Key": f"key-{uuid.uuid4()}"}
+    order: list[str] = []
+
+    first = call("POST", "/bookings", {"slot_id": "p1", "name": "Ada", "email": address}, headers=key)
+    equal("pagination fixture: first booking", first.status, 201)
+    order.append((first.body or {}).get("id"))
+    retry = call("POST", "/bookings", {"slot_id": "p1", "name": "Ada", "email": address}, headers=key)
+    equal("pagination fixture: the retry replays", retry.status, 201)
+
+    for i in range(2, 6):
+        created = call("POST", "/bookings", {"slot_id": f"p{i}", "name": "Ada", "email": address})
+        equal(f"pagination fixture: booking p{i}", created.status, 201)
+        order.append((created.body or {}).get("id"))
+
+    listing = call("GET", f"/bookings?email={quote(address)}&limit=2")
+    equal("the first page holds the limit", len(listing.body["bookings"]), 2)
+    check("the first page offers a cursor", bool(listing.body.get("next_cursor")), listing.body)
+
+    collected = list(listing.body["bookings"])
+    cursor = listing.body.get("next_cursor")
+    pages = 1
+    while cursor and pages < 10:
+        following = call(
+            "GET", f"/bookings?email={quote(address)}&limit=2&cursor={quote(cursor)}"
+        )
+        equal(f"page {pages + 1} is 200", following.status, 200)
+        collected.extend(following.body["bookings"])
+        cursor = following.body.get("next_cursor")
+        pages += 1
+
+    equal("every booking comes back exactly once, oldest first", [b["id"] for b in collected], order)
+    equal("the last page has no cursor", cursor, None)
+
+    equal(
+        "email matching ignores case",
+        len(call("GET", f"/bookings?email={quote(address.upper())}").body["bookings"]),
+        5,
+    )
+    equal("limit 0 is 400", call("GET", f"/bookings?email={quote(address)}&limit=0").status, 400)
+    equal("limit 51 is 400", call("GET", f"/bookings?email={quote(address)}&limit=51").status, 400)
+    equal("limit abc is 400", call("GET", f"/bookings?email={quote(address)}&limit=abc").status, 400)
+    equal("missing email is 400", call("GET", "/bookings").status, 400)
+    equal(
+        "a garbage cursor is 400",
+        call("GET", f"/bookings?email={quote(address)}&cursor=@@@").status,
+        400,
+    )
+
+    equal("cancelling still works on a listed booking", call("DELETE", f"/bookings/{order[0]}").status, 200)
+    after = call("GET", f"/bookings?email={quote(address)}&limit=2")
+    equal("a cancelled booking stays in the list", len(after.body["bookings"]), 2)
+    equal("and shows as cancelled", after.body["bookings"][0]["status"], "cancelled")
+
+
 def main() -> int:
     print(f"checking {BASE}")
     if not KEY:
@@ -330,6 +393,7 @@ def main() -> int:
     check_booking_validation()
     check_cancel()
     check_idempotency()
+    check_pagination()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:

@@ -1,5 +1,6 @@
 """Levels 1-4: book a slot, look a booking up, cancel it."""
 
+import base64
 import uuid
 
 from fastapi import APIRouter, Depends, Request
@@ -16,6 +17,19 @@ from .validation import clean_text, is_valid_email, iso, normalise_email, utc_no
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
 BOOKING_COLUMNS = "id, slot_id, name, email, status, created_at"
+
+
+def encode_cursor(seq: int) -> str:
+    """Opaque token for "continue after this row"."""
+    return base64.urlsafe_b64encode(str(seq).encode()).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str) -> int:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        return int(base64.urlsafe_b64decode(padded.encode()).decode())
+    except Exception:
+        raise ApiError(400, "cursor is not valid")
 
 
 def booking_json(row: dict) -> dict:
