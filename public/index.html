@@ -113,21 +113,7 @@
       <h1>Boka</h1>
       <p class="sub">Clinic appointments</p>
     </div>
-    <button id="key-button" class="ghost small" type="button">API key</button>
   </header>
-
-  <section id="key-panel" class="panel" hidden>
-    <h2>Access</h2>
-    <p class="muted" style="margin-top:0">This page calls the booking API. Paste the API key you were given; it is kept in this browser only.</p>
-    <form id="key-form" class="row">
-      <div class="grow">
-        <label for="key-input">API key</label>
-        <input id="key-input" type="password" autocomplete="off" placeholder="X-API-Key" required>
-      </div>
-      <button type="submit">Save key</button>
-    </form>
-    <p id="key-error" class="notice error" hidden style="margin-top:14px"></p>
-  </section>
 
   <section id="slots-section">
     <div class="section-head">
@@ -189,8 +175,7 @@
 (() => {
   "use strict";
 
-  const KEY_STORAGE = "boka.apiKey";
-  const state = { key: localStorage.getItem(KEY_STORAGE) || "", slots: [], mineCursor: null, mineEmail: "" };
+  const state = { slots: [], mineCursor: null, mineEmail: "" };
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({
@@ -202,19 +187,16 @@
   const fmtStamp = (iso) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
   const dayKey = (iso) => new Date(iso).toDateString();
 
+  // The page talks to its own backend under /web, which adds the API key on the
+  // server. A patient never handles the clinic's credential.
   async function api(path, options = {}) {
     const headers = Object.assign({}, options.headers || {});
-    if (state.key) headers["X-API-Key"] = state.key;
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
     const response = await fetch(path, Object.assign({}, options, { headers }));
     let body = null;
     try { body = await response.json(); } catch (_) { body = null; }
 
-    if (response.status === 401) {
-      showKeyPanel("That API key was rejected. Paste the current key to continue.");
-      throw new Error("unauthorized");
-    }
     if (!response.ok) {
       const message = body && body.error ? body.error : "request failed (" + response.status + ")";
       const error = new Error(message);
@@ -224,34 +206,6 @@
     }
     return body;
   }
-
-  function showKeyPanel(message) {
-    $("key-panel").hidden = false;
-    $("key-error").hidden = !message;
-    if (message) $("key-error").textContent = message;
-    $("key-input").focus();
-  }
-
-  $("key-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    state.key = $("key-input").value.trim();
-    localStorage.setItem(KEY_STORAGE, state.key);
-    $("key-error").hidden = true;
-    try {
-      await loadSlots();
-      $("key-panel").hidden = true;
-      $("key-button").textContent = "API key set";
-    } catch (error) {
-      if (error.message !== "unauthorized") showKeyPanel(error.message);
-    }
-  });
-
-  $("key-button").addEventListener("click", () => {
-    $("key-input").value = state.key;
-    $("key-panel").hidden = false;
-    $("key-error").hidden = true;
-    $("key-input").focus();
-  });
 
   function renderSlots() {
     const host = $("slots");
@@ -301,7 +255,7 @@
   async function loadSlots() {
     const provider = $("provider-filter").value;
     const query = provider ? "?provider=" + encodeURIComponent(provider) : "";
-    const data = await api("/slots" + query);
+    const data = await api("/web/slots" + query);
     state.slots = data.slots || [];
 
     const providers = [...new Set(state.slots.map((s) => s.provider).filter(Boolean))];
@@ -335,7 +289,7 @@
     $("book-submit").disabled = true;
 
     try {
-      const booking = await api("/bookings", {
+      const booking = await api("/web/bookings", {
         method: "POST",
         headers: { "Idempotency-Key": crypto.randomUUID() },
         body: JSON.stringify({ slot_id: slotId, name, email }),
@@ -392,7 +346,7 @@
       cancel.addEventListener("click", async () => {
         cancel.disabled = true;
         try {
-          await api("/bookings/" + encodeURIComponent(booking.id), { method: "DELETE" });
+          await api("/web/bookings/" + encodeURIComponent(booking.id), { method: "DELETE" });
           await refreshMine();
           await loadSlots();
         } catch (error) {
@@ -411,7 +365,7 @@
     const params = new URLSearchParams({ email, limit: "5" });
     if (append && state.mineCursor) params.set("cursor", state.mineCursor);
 
-    const data = await api("/bookings?" + params.toString());
+    const data = await api("/web/bookings?" + params.toString());
     const list = $("mine-list");
     if (!append) list.innerHTML = "";
 
@@ -433,12 +387,12 @@
     try {
       await refreshMine();
     } catch (error) {
-      if (error.message !== "unauthorized") alert(error.message);
+      alert(error.message);
     }
   });
 
   $("load-more").addEventListener("click", async () => {
-    try { await loadMine(true); } catch (error) { if (error.message !== "unauthorized") alert(error.message); }
+    try { await loadMine(true); } catch (error) { alert(error.message); }
   });
 
   $("provider-filter").addEventListener("change", () => loadSlots().catch(() => {}));
@@ -446,20 +400,11 @@
   $("tz").textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
 
   (async function start() {
-    if (!state.key) {
-      showKeyPanel("");
-      $("slots-empty").hidden = false;
-      $("slots-empty").textContent = "Enter the API key above to load the open slots.";
-      return;
-    }
-    $("key-button").textContent = "API key set";
     try {
       await loadSlots();
     } catch (error) {
-      if (error.message !== "unauthorized") {
-        $("slots-empty").hidden = false;
-        $("slots-empty").textContent = error.message;
-      }
+      $("slots-empty").hidden = false;
+      $("slots-empty").textContent = error.message;
     }
   })();
 })();
