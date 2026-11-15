@@ -329,6 +329,7 @@ def main() -> int:
     check_booking()
     check_booking_validation()
     check_cancel()
+    check_idempotency()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:

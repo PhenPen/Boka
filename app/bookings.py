@@ -110,6 +110,41 @@ def _book(payload: dict, key: str | None, digest: str | None) -> tuple[int, dict
     return 201, booking
 
 
+@router.get("/bookings")
+def list_bookings(
+    email: str | None = None, limit: str | None = None, cursor: str | None = None
+) -> dict:
+    address = clean_text(email)
+    if not address:
+        raise ApiError(400, "email is required")
+
+    page_size = 10
+    if limit is not None:
+        try:
+            page_size = int(limit)
+        except (TypeError, ValueError):
+            raise ApiError(400, "limit must be an integer from 1 to 50")
+        if not 1 <= page_size <= 50:
+            raise ApiError(400, "limit must be an integer from 1 to 50")
+
+    after = decode_cursor(cursor) if cursor else 0
+
+    with pool.connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {BOOKING_COLUMNS}, seq FROM bookings
+            WHERE email = %s AND seq > %s
+            ORDER BY seq ASC
+            LIMIT %s
+            """,
+            (normalise_email(address), after, page_size + 1),
+        ).fetchall()
+
+    page = rows[:page_size]
+    next_cursor = encode_cursor(page[-1]["seq"]) if len(rows) > page_size else None
+    return {"bookings": [booking_json(row) for row in page], "next_cursor": next_cursor}
+
+
 @router.get("/bookings/{booking_id}")
 def get_booking(booking_id: str) -> dict:
     with pool.connection() as conn:
