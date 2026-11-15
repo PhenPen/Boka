@@ -78,3 +78,26 @@ def get_booking(booking_id: str) -> dict:
     if row is None:
         raise ApiError(404, "booking not found")
     return booking_json(row)
+
+
+@router.delete("/bookings/{booking_id}")
+def cancel_booking(booking_id: str) -> dict:
+    with pool.connection() as conn:
+        # Locking the row makes cancelling twice from two requests settle as
+        # one success and one 409 instead of two successes.
+        row = conn.execute(
+            f"SELECT {BOOKING_COLUMNS} FROM bookings WHERE id = %s FOR UPDATE",
+            (booking_id,),
+        ).fetchone()
+        if row is None:
+            raise ApiError(404, "booking not found")
+        if row["status"] == "cancelled":
+            raise ApiError(409, "booking is already cancelled")
+
+        row = conn.execute(
+            f"UPDATE bookings SET status = 'cancelled' WHERE id = %s RETURNING {BOOKING_COLUMNS}",
+            (booking_id,),
+        ).fetchone()
+
+    # Dropping out of the partial index frees the slot for the next patient.
+    return booking_json(row)

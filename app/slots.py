@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from .auth import require_api_key
 from .db import pool
 from .errors import ApiError
+from .http_utils import json_body
 from .validation import iso, parse_timestamp
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -16,7 +17,7 @@ SLOT_COLUMNS = "id, provider, start_raw, end_raw, start_ts, end_ts"
 
 @router.post("/reset")
 async def reset(request: Request) -> dict:
-    payload = await _json_body(request)
+    payload = await json_body(request)
     slots = payload.get("slots")
     if not isinstance(slots, list):
         raise ApiError(400, "slots must be an array")
@@ -108,12 +109,3 @@ def _slot_json(row: dict) -> dict:
         "available": row["available"],
     }
 
-
-async def _json_body(request: Request) -> dict:
-    try:
-        payload = await request.json()
-    except Exception:
-        raise ApiError(400, "body must be valid JSON")
-    if not isinstance(payload, dict):
-        raise ApiError(400, "body must be a JSON object")
-    return payload

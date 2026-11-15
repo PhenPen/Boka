@@ -7,6 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .errors import ApiError
 from .slots import router as slots_router
+from .bookings import router as bookings_router
 
 app = FastAPI(title="Clinic booking API", version="1.0.0")
 
@@ -50,3 +51,4 @@ for _prefix in ("", "/api", "/api/index"):
     in_schema = _prefix == ""
     app.include_router(router, prefix=_prefix, include_in_schema=in_schema)
     app.include_router(slots_router, prefix=_prefix, include_in_schema=in_schema)
+    app.include_router(bookings_router, prefix=_prefix, include_in_schema=in_schema)

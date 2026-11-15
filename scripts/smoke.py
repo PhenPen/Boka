@@ -13,6 +13,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -114,6 +115,7 @@ def check_reset() -> None:
         "/reset",
         {
             "slots": [
+                {"id": "past", "provider": "Dr Ade", "start": "2020-01-10T09:00:00Z", "end": "2020-01-10T09:30:00Z"},
                 {"id": "s1", "provider": "Dr Ade", "start": "2030-01-10T09:00:00Z", "end": "2030-01-10T09:30:00Z"},
                 {"id": "s2", "provider": "Dr Ade", "start": "2030-01-10T10:00:00Z", "end": "2030-01-10T10:30:00Z"},
                 {"id": "s3", "provider": "Dr Bello", "start": "2030-01-11T09:00:00Z", "end": "2030-01-11T09:30:00Z"},
@@ -125,11 +127,112 @@ def check_reset() -> None:
     listing = call("GET", "/slots")
     equal("GET /slots is 200", listing.status, 200)
     slots = listing.body.get("slots", [])
-    equal("all seeded slots are listed", len(slots), 3)
-    if len(slots) == 3:
-        equal("slots are earliest first", [s["id"] for s in slots], ["s1", "s2", "s3"])
-        equal("start is echoed verbatim", slots[0]["start"], "2030-01-10T09:00:00Z")
+    equal("all seeded slots are listed, including past ones", len(slots), 4)
+    if len(slots) == 4:
+        equal("slots are earliest first", [s["id"] for s in slots], ["past", "s1", "s2", "s3"])
+        equal("start is echoed verbatim", slots[1]["start"], "2030-01-10T09:00:00Z")
+        equal("end is echoed verbatim", slots[1]["end"], "2030-01-10T09:30:00Z")
         check("every slot reports availability", all("available" in s for s in slots), slots)
+
+    filtered = call("GET", f"/slots?provider={quote('Dr Bello')}")
+    equal("provider filter keeps only that provider", [s["id"] for s in filtered.body["slots"]], ["s3"])
+
+
+_EMAIL_SEQUENCE = 0
+
+
+def email(tag: str = "patient") -> str:
+    """A fresh address per check so the per-email rate limit cannot cascade."""
+    global _EMAIL_SEQUENCE
+    _EMAIL_SEQUENCE += 1
+    return f"{tag}-{_EMAIL_SEQUENCE}@example.com"
+
+
+def check_booking() -> None:
+    section("level 1-3: booking a slot")
+    address = email("ada")
+    created = call(
+        "POST", "/bookings", {"slot_id": "s1", "name": "  Ada Obi  ", "email": address.upper()}
+    )
+    equal("POST /bookings is 201", created.status, 201)
+    booking = created.body or {}
+    check("booking has an id", isinstance(booking.get("id"), str) and bool(booking["id"]), booking)
+    equal("name is trimmed", booking.get("name"), "Ada Obi")
+    equal("email is stored lower case", booking.get("email"), address)
+    equal("status is confirmed", booking.get("status"), "confirmed")
+    equal("slot_id is echoed", booking.get("slot_id"), "s1")
+    check(
+        "created_at is an ISO UTC timestamp",
+        isinstance(booking.get("created_at"), str) and booking["created_at"].endswith("Z"),
+        booking.get("created_at"),
+    )
+
+    fetched = call("GET", f"/bookings/{booking.get('id')}")
+    equal("GET /bookings/{id} is 200", fetched.status, 200)
+    equal("GET /bookings/{id} returns the booking", fetched.body, booking)
+    equal("unknown booking id is 404", call("GET", "/bookings/does-not-exist").status, 404)
+
+    listing = call("GET", "/slots")
+    taken = [s for s in listing.body["slots"] if s["id"] == "s1"]
+    equal("a booked slot is no longer available", taken[0]["available"] if taken else None, False)
+
+    clash = call("POST", "/bookings", {"slot_id": "s1", "name": "Someone Else", "email": email()})
+    equal("booking an already taken slot is 409", clash.status, 409)
+
+
+def check_booking_validation() -> None:
+    section("level 2: booking validation")
+    equal(
+        "slot_id missing is 400",
+        call("POST", "/bookings", {"name": "Ada Obi", "email": email()}).status,
+        400,
+    )
+    equal(
+        "name missing is 400",
+        call("POST", "/bookings", {"slot_id": "s2", "email": email()}).status,
+        400,
+    )
+    equal(
+        "email missing is 400",
+        call("POST", "/bookings", {"slot_id": "s2", "name": "Ada Obi"}).status,
+        400,
+    )
+    equal(
+        "name of only spaces is 400",
+        call("POST", "/bookings", {"slot_id": "s2", "name": "   ", "email": email()}).status,
+        400,
+    )
+    equal(
+        "empty slot_id is 400",
+        call("POST", "/bookings", {"slot_id": "", "name": "Ada Obi", "email": email()}).status,
+        400,
+    )
+    equal(
+        "email without @ is 400",
+        call("POST", "/bookings", {"slot_id": "s2", "name": "Ada Obi", "email": "not-an-email"}).status,
+        400,
+    )
+    equal(
+        "email without a domain is 400",
+        call("POST", "/bookings", {"slot_id": "s2", "name": "Ada Obi", "email": "ada@"}).status,
+        400,
+    )
+    equal(
+        "numeric slot_id is 400",
+        call("POST", "/bookings", {"slot_id": 7, "name": "Ada Obi", "email": email()}).status,
+        400,
+    )
+    equal(
+        "unknown slot is 404",
+        call("POST", "/bookings", {"slot_id": "nope", "name": "Ada Obi", "email": email()}).status,
+        404,
+    )
+    equal(
+        "a slot that already started is 400",
+        call("POST", "/bookings", {"slot_id": "past", "name": "Ada Obi", "email": email()}).status,
+        400,
+    )
+    equal("an unparseable body is 400", call_raw("POST", "/bookings", b"{oops").status, 400)
 
 
 def main() -> int:
@@ -140,6 +243,8 @@ def main() -> int:
 
     check_auth()
     check_reset()
+    check_booking()
+    check_booking_validation()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:
