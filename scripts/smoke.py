@@ -235,6 +235,32 @@ def check_booking_validation() -> None:
     equal("an unparseable body is 400", call_raw("POST", "/bookings", b"{oops").status, 400)
 
 
+def check_cancel() -> None:
+    section("level 3: cancelling")
+    address = email("canceller")
+    created = call("POST", "/bookings", {"slot_id": "s3", "name": "Ada Obi", "email": address})
+    equal("a fresh slot books", created.status, 201)
+    booking_id = (created.body or {}).get("id")
+
+    cancelled = call("DELETE", f"/bookings/{booking_id}")
+    equal("DELETE /bookings/{id} is 200", cancelled.status, 200)
+    equal("the booking is cancelled", (cancelled.body or {}).get("status"), "cancelled")
+    equal("the id is unchanged", (cancelled.body or {}).get("id"), booking_id)
+
+    fetched = call("GET", f"/bookings/{booking_id}")
+    equal("GET shows the cancelled status", (fetched.body or {}).get("status"), "cancelled")
+
+    listing = call("GET", "/slots")
+    freed = [s for s in listing.body["slots"] if s["id"] == "s3"]
+    equal("cancelling frees the slot", freed[0]["available"] if freed else None, True)
+
+    equal("cancelling again is 409", call("DELETE", f"/bookings/{booking_id}").status, 409)
+    equal("cancelling an unknown booking is 404", call("DELETE", "/bookings/nope").status, 404)
+
+    rebooked = call("POST", "/bookings", {"slot_id": "s3", "name": "Ada Obi", "email": email()})
+    equal("a freed slot can be booked again", rebooked.status, 201)
+
+
 def main() -> int:
     print(f"checking {BASE}")
     if not KEY:
@@ -245,6 +271,7 @@ def main() -> int:
     check_reset()
     check_booking()
     check_booking_validation()
+    check_cancel()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:
