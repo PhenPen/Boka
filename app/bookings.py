@@ -5,6 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from psycopg.errors import ForeignKeyViolation
 from starlette.concurrency import run_in_threadpool
 
 from . import idempotency, ratelimit
@@ -118,15 +119,19 @@ def _book(payload: dict, key: str | None, digest: str | None) -> tuple[int, dict
 
         # The partial unique index decides the race: when another request won,
         # this inserts nothing and the slot is reported as taken.
-        row = conn.execute(
-            f"""
-            INSERT INTO bookings (id, slot_id, name, email, status)
-            VALUES (%s, %s, %s, %s, 'confirmed')
-            ON CONFLICT DO NOTHING
-            RETURNING {BOOKING_COLUMNS}
-            """,
-            (str(uuid.uuid4()), slot_id, name, normalise_email(email)),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                f"""
+                INSERT INTO bookings (id, slot_id, name, email, status)
+                VALUES (%s, %s, %s, %s, 'confirmed')
+                ON CONFLICT DO NOTHING
+                RETURNING {BOOKING_COLUMNS}
+                """,
+                (str(uuid.uuid4()), slot_id, name, normalise_email(email)),
+            ).fetchone()
+        except ForeignKeyViolation:
+            # The slot was replaced or deleted between the lookup and the insert.
+            raise ApiError(404, "slot not found")
         if row is None:
             raise ApiError(409, "slot is already booked")
 
