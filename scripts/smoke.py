@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -430,6 +431,62 @@ def check_rate_limit() -> None:
     )
 
 
+def check_concurrency() -> None:
+    section("level 3: simultaneous bookings")
+
+    for round_number in range(1, 4):
+        slot_id = f"c{round_number}"
+        seed([make_slot(slot_id, f"2030-05-0{round_number}T09:00:00Z", f"2030-05-0{round_number}T09:30:00Z")])
+
+        def attempt(index: int) -> int:
+            return call(
+                "POST",
+                "/bookings",
+                {"slot_id": slot_id, "name": f"Racer {index}", "email": f"racer-{uuid.uuid4()}@example.com"},
+            ).status
+
+        with ThreadPoolExecutor(max_workers=25) as workers:
+            statuses = list(workers.map(attempt, range(25)))
+
+        equal(
+            f"round {round_number}: 25 simultaneous bookings give exactly one 201",
+            statuses.count(201),
+            1,
+        )
+        equal(
+            f"round {round_number}: every other request is 409",
+            statuses.count(409),
+            24,
+        )
+
+    # Spread across ten slots at once: exactly one winner per slot.
+    slots = [
+        make_slot(f"m{i}", f"2030-06-{i:02d}T09:00:00Z", f"2030-06-{i:02d}T09:30:00Z")
+        for i in range(1, 11)
+    ]
+    seed(slots)
+    jobs = [(slot["id"], uuid.uuid4().hex) for slot in slots for _ in range(8)]
+
+    def attempt_job(job) -> int:
+        slot_id, tag = job
+        return call(
+            "POST",
+            "/bookings",
+            {"slot_id": slot_id, "name": "Racer", "email": f"racer-{tag}@example.com"},
+        ).status
+
+    with ThreadPoolExecutor(max_workers=40) as workers:
+        statuses = list(workers.map(attempt_job, jobs))
+
+    equal("80 simultaneous bookings across 10 slots give exactly ten 201s", statuses.count(201), 10)
+    equal("the other 70 are 409s", statuses.count(409), 70)
+    equal(
+        "no slot is left marked available",
+        [s["id"] for s in call("GET", "/slots").body["slots"] if s["available"]],
+        [],
+    )
+
+
 def main() -> int:
     print(f"checking {BASE}")
     if not KEY:
@@ -444,6 +501,7 @@ def main() -> int:
     check_idempotency()
     check_pagination()
     check_rate_limit()
+    check_concurrency()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:
