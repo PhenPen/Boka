@@ -12,12 +12,14 @@ from .validation import iso, parse_timestamp
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
-SLOT_COLUMNS = "id, provider, start_raw, end_raw, start_ts, end_ts"
-
 
 @router.post("/reset")
 async def reset(request: Request) -> dict:
-    payload = await json_body(request)
+    return reset_slots(await json_body(request))
+
+
+def reset_slots(payload: dict) -> dict:
+    """Replace every slot and drop the state that belonged to the old set."""
     slots = payload.get("slots")
     if not isinstance(slots, list):
         raise ApiError(400, "slots must be an array")
@@ -83,6 +85,10 @@ async def reset(request: Request) -> dict:
 
 @router.get("/slots")
 def list_slots(provider: str | None = None) -> dict:
+    return list_slots_data(provider)
+
+
+def list_slots_data(provider: str | None = None) -> dict:
     with pool.connection() as conn:
         rows = conn.execute(
             """

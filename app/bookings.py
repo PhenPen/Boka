@@ -52,11 +52,11 @@ async def create_booking(request: Request) -> JSONResponse:
 
     # The database work runs in a worker thread so concurrent bookings really
     # are concurrent instead of queueing behind the event loop.
-    status, body, headers = await run_in_threadpool(_handle_create, payload, key, digest)
+    status, body, headers = await run_in_threadpool(handle_create, payload, key, digest)
     return JSONResponse(body, status_code=status, headers=headers)
 
 
-def _handle_create(payload: dict, key: str | None, digest: str | None):
+def handle_create(payload: dict, key: str | None, digest: str | None):
     if key:
         with pool.connection() as conn:
             stored = idempotency.load(conn, key)
@@ -152,6 +152,12 @@ def _book(payload: dict, key: str | None, digest: str | None) -> tuple[int, dict
 def list_bookings(
     email: str | None = None, limit: str | None = None, cursor: str | None = None
 ) -> dict:
+    return list_bookings_data(email, limit, cursor)
+
+
+def list_bookings_data(
+    email: str | None, limit: str | None = None, cursor: str | None = None
+) -> dict:
     address = clean_text(email)
     if not address:
         raise ApiError(400, "email is required")
@@ -185,6 +191,10 @@ def list_bookings(
 
 @router.get("/bookings/{booking_id}")
 def get_booking(booking_id: str) -> dict:
+    return get_booking_data(booking_id)
+
+
+def get_booking_data(booking_id: str) -> dict:
     with pool.connection() as conn:
         row = conn.execute(
             f"SELECT {BOOKING_COLUMNS} FROM bookings WHERE id = %s", (booking_id,)
@@ -196,6 +206,10 @@ def get_booking(booking_id: str) -> dict:
 
 @router.delete("/bookings/{booking_id}")
 def cancel_booking(booking_id: str) -> dict:
+    return cancel_booking_data(booking_id)
+
+
+def cancel_booking_data(booking_id: str) -> dict:
     with pool.connection() as conn:
         # Locking the row makes two simultaneous cancels settle as one success
         # and one 409 instead of two successes.
