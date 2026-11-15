@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from . import idempotency
+from . import idempotency, ratelimit
 from .auth import require_api_key
 from .db import pool
 from .errors import ApiError
@@ -51,8 +51,8 @@ async def create_booking(request: Request) -> JSONResponse:
 
     # The database work runs in a worker thread so concurrent bookings really
     # are concurrent instead of queueing behind the event loop.
-    status, body = await run_in_threadpool(_handle_create, payload, key, digest)
-    return JSONResponse(body, status_code=status)
+    status, body, headers = await run_in_threadpool(_handle_create, payload, key, digest)
+    return JSONResponse(body, status_code=status, headers=headers)
 
 
 def _handle_create(payload: dict, key: str | None, digest: str | None):
@@ -61,20 +61,39 @@ def _handle_create(payload: dict, key: str | None, digest: str | None):
             stored = idempotency.load(conn, key)
         if stored is not None:
             if stored["body_hash"] != digest:
-                return 422, {"error": "idempotency key was used with a different body"}
-            return stored["status"], stored["body"]
+                return 422, {"error": "idempotency key was used with a different body"}, {}
+            return stored["status"], stored["body"], {}
 
     try:
-        return _book(payload, key, digest)
+        status, body = _book(payload, key, digest)
+        return status, body, {}
     except ApiError as exc:
         # Persist failures too, so a retried request sees the same answer.
         if key and exc.status in idempotency.REPLAYABLE:
             with pool.connection() as conn:
                 idempotency.store(conn, key, digest, exc.status, {"error": exc.message})
-        return exc.status, {"error": exc.message}
+        return exc.status, {"error": exc.message}, exc.headers
+
+
+def _seconds_to_wait(payload: dict) -> int:
+    """Count the attempt against the email's rate limit, when it has one."""
+    raw = payload.get("email")
+    if not isinstance(raw, str) or not raw.strip():
+        # Nothing to attribute the attempt to; the request is rejected as
+        # invalid further down instead.
+        return 0
+    return ratelimit.record_attempt(normalise_email(raw))
 
 
 def _book(payload: dict, key: str | None, digest: str | None) -> tuple[int, dict]:
+    wait = _seconds_to_wait(payload)
+    if wait:
+        raise ApiError(
+            429,
+            "too many booking attempts for this email",
+            {"Retry-After": str(wait)},
+        )
+
     slot_id = clean_text(payload.get("slot_id"))
     name = clean_text(payload.get("name"))
     email = clean_text(payload.get("email"))

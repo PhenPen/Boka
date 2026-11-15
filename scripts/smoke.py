@@ -13,7 +13,7 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -381,6 +381,55 @@ def check_pagination() -> None:
     equal("and shows as cancelled", after.body["bookings"][0]["status"], "cancelled")
 
 
+def check_rate_limit() -> None:
+    section("level 5: rate limiting")
+    seed(
+        [
+            make_slot(f"r{i}", f"2030-04-{i:02d}T09:00:00Z", f"2030-04-{i:02d}T09:30:00Z")
+            for i in range(1, 8)
+        ]
+    )
+    address = email("spam")
+    statuses = [
+        call("POST", "/bookings", {"slot_id": f"r{i}", "name": "Spam", "email": address}).status
+        for i in range(1, 7)
+    ]
+    equal("the first five attempts are allowed", statuses[:5], [201] * 5)
+    equal("the sixth attempt is 429", statuses[5], 429)
+
+    throttled = call("POST", "/bookings", {"slot_id": "r6", "name": "Spam", "email": address})
+    retry_after = throttled.headers.get("retry-after")
+    check(
+        "Retry-After is whole seconds within the window",
+        retry_after is not None and retry_after.isdigit() and 1 <= int(retry_after) <= 60,
+        retry_after,
+    )
+    check("the 429 body is {error}", isinstance(throttled.body, dict) and "error" in throttled.body, throttled.body)
+
+    other = call("POST", "/bookings", {"slot_id": "r7", "name": "Other", "email": email("other")})
+    equal("a different email is not affected", other.status, 201)
+
+    failing = email("failing")
+    for attempt in range(1, 6):
+        equal(
+            f"failed attempt {attempt} is counted, not blocked",
+            call("POST", "/bookings", {"slot_id": "missing", "name": "A", "email": failing}).status,
+            404,
+        )
+    equal(
+        "the sixth failing attempt is 429",
+        call("POST", "/bookings", {"slot_id": "missing", "name": "A", "email": failing}).status,
+        429,
+    )
+
+    seed([make_slot("z1", "2030-04-10T09:00:00Z", "2030-04-10T09:30:00Z")])
+    equal(
+        "reset clears the rate limit",
+        call("POST", "/bookings", {"slot_id": "z1", "name": "Spam", "email": address}).status,
+        201,
+    )
+
+
 def main() -> int:
     print(f"checking {BASE}")
     if not KEY:
@@ -394,6 +443,7 @@ def main() -> int:
     check_cancel()
     check_idempotency()
     check_pagination()
+    check_rate_limit()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:
